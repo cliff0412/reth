@@ -23,3 +23,7 @@
 
 # include example files
 !/examples
+
+# include deploy-config for op-node
+!profiling/deploy-config
+!profiling/*.sh

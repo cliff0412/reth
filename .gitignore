@@ -68,3 +68,11 @@ links-report.json
 __pycache__/
 *.py[cod]
 *$py.class
+
+profiling/test_data/consensus
+!profiling/test_data/consensus/config.yml
+profiling/test_data/execution/geth
+profiling/logs/
+profiling/profiles/
+profiling/optimism_build/
+profiling/op_reth_data/

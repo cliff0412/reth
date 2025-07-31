@@ -1,0 +1,134 @@
+# syntax=docker.io/docker/dockerfile:1.7-labs
+
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+WORKDIR /app
+
+LABEL org.opencontainers.image.source=https://github.com/paradigmxyz/reth
+LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
+
+# Install only essential build dependencies
+RUN apt-get update && apt-get -y upgrade && \
+    apt-get install -y libclang-dev build-essential pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+FROM chef AS planner
+COPY . .
+# Fixed: cargo chef prepare doesn't accept --manifest-path
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+COPY . .
+
+# Build with profiling profile and jemalloc-prof feature
+ARG BUILD_PROFILE=profiling
+ENV BUILD_PROFILE=$BUILD_PROFILE
+
+# Enable profiling features
+ARG RUSTFLAGS="-C target-cpu=native"
+ENV RUSTFLAGS="$RUSTFLAGS"
+
+# Enable jemalloc profiling features
+ARG FEATURES="jemalloc-prof,asm-keccak"
+ENV FEATURES=$FEATURES
+
+# Build dependencies with profiling - fixed: use --manifest-path like original
+RUN cargo chef cook \
+    --profile $BUILD_PROFILE \
+    --features "$FEATURES" \
+    --recipe-path recipe.json \
+    --manifest-path /app/crates/optimism/bin/Cargo.toml
+
+# Build the application with profiling
+COPY . .
+RUN cargo build \
+    --profile $BUILD_PROFILE \
+    --features "$FEATURES" \
+    --bin op-reth \
+    --manifest-path /app/crates/optimism/bin/Cargo.toml
+
+RUN ls -la /app/target/$BUILD_PROFILE/op-reth
+RUN cp /app/target/$BUILD_PROFILE/op-reth /app/op-reth
+
+FROM ubuntu:22.04 AS runtime
+# FROM rust:1.87-slim-bullseye AS runtime
+
+# Install only essential runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    libssl-dev \
+    build-essential \
+    pkg-config \
+    strace
+# RUN rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
+RUN cargo install samply
+
+WORKDIR /app
+
+# Copy the built binary
+COPY --from=builder /app/op-reth /usr/local/bin/
+RUN chmod +x /usr/local/bin/op-reth
+
+# Copy licenses
+COPY LICENSE-* ./
+
+# Create directories for profiling data
+RUN mkdir -p /app/profiles /app/logs
+
+# Set environment variables for profiling
+ENV MALLOC_CONF="prof:true,lg_prof_sample:0,lg_prof_interval:30"
+ENV RUST_LOG="info"
+ENV RUST_BACKTRACE="1"
+
+EXPOSE 30303 30303/udp 9001 8545 8546 7545 8551 3000
+
+# Create a startup script for profiling
+RUN echo '#!/bin/bash\n\
+# Enable profiling if requested\n\
+if [ "$ENABLE_PROFILING" = "true" ]; then\n\
+    echo "Starting OP node with profiling enabled..."\n\
+
+    echo 1 > /proc/sys/kernel/perf_event_paranoid 2>/dev/null || true\n\
+
+    # Initialize database if INIT_DATABASE is true
+    if [ "$INIT_DATABASE" = "true" ]; then\n\
+        echo "Initializing database..."\n\
+        rm -rf /root/.local/share/reth/data\n\
+        /usr/local/bin/op-reth init --datadir /root/.local/share/reth/data --chain /app/optimism/build/genesis.json\n\
+    fi\n\
+
+    # Set up jemalloc profiling\n\
+    # export MALLOC_CONF="prof:true,lg_prof_sample:0,lg_prof_interval:30,prof_prefix:/app/profiles/jeprof"\n\
+    export RUST_LOG=info\n\
+    # Start with profiling\n\
+    exec /usr/local/bin/op-reth "$@"\n\
+else\n\
+    echo "Starting OP node without profiling..."\n\
+    exec /usr/local/bin/op-reth "$@"\n\
+fi' > /app/start.sh && chmod +x /app/start.sh
+
+
+RUN echo '#!/bin/bash\n\
+\n\
+# Start samply in background\n\
+samply record --duration 60 --output /app/profiles/profile-$(date +%Y%m%d-%H%M).json.gz --unstable-presymbolicate --save-only --no-open --pid $(pgrep op-reth) &\n\
+SAMPLEY_PID=$!\n\
+\n\
+# Wait for 70 seconds to allow file writing\n\
+sleep 70\n\
+\n\
+# Kill samply if still running\n\
+echo "kill samply process: $SAMPLEY_PID"\n\
+kill -SIGINT $SAMPLEY_PID\n\
+\n\
+# Check if file was created\n\
+echo "Checking for output files:"\n\
+ls -la /app/profiles/profile-*.json.gz 2>/dev/null || echo "No profile files found"\n\
+' > /app/start_samply.sh && chmod +x /app/start_samply.sh
+
+
+ENTRYPOINT ["/app/start.sh"]
