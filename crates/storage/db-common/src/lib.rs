@@ -9,6 +9,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod init;
+pub mod init_triedb;
 
 mod db_tool;
 pub use db_tool::*;

@@ -617,7 +617,7 @@ where
 
 /// Computes the state root (from scratch) based on the accounts and storages present in the
 /// database.
-fn compute_state_root<Provider>(
+pub fn compute_state_root<Provider>(
     provider: &Provider,
     prefix_sets: Option<TriePrefixSets>,
 ) -> Result<B256, InitStorageError>
