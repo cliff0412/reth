@@ -35,6 +35,8 @@ tracing = { workspace = true, features = ["attributes"] }
 # misc
 auto_impl.workspace = true
 itertools.workspace = true
+triedb.workspace = true
+nybbles = "0.3.4"
 
 # `metrics` feature
 reth-metrics = { workspace = true, optional = true }
